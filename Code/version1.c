@@ -1,10 +1,28 @@
+#include <pthread.h>
 #include <stdio.h>
-#include <string.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #define MAX_LINES 1000
 #define MAX_LINE_LENGTH 256
+
+pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
+pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+int command_executed = 0;
+
+// Struct for passing data to threads
+typedef struct {
+    int index;
+    int rows;
+    int cols;
+    char **map;
+    char (*position)[MAX_LINE_LENGTH];
+    char *orientations;
+    char (*commande)[MAX_LINE_LENGTH];
+    int **drone_indices;
+} DroneData;
 
 // function to read the txt file
 void read_file(FILE *file, char position[MAX_LINES][MAX_LINE_LENGTH], char commande[MAX_LINES][MAX_LINE_LENGTH], int *line_count) {
@@ -23,7 +41,7 @@ void read_file(FILE *file, char position[MAX_LINES][MAX_LINE_LENGTH], char comma
 }
 
 // function to initialize the map with the drones
-void initialize_map(int rows, int cols, char map[rows][cols]) {
+void initialize_map(int rows, int cols, char **map) {
     for(int i = 0; i < rows; i++) {
         for(int j = 0; j < cols; j++) {
             map[i][j] = ' ';
@@ -32,7 +50,7 @@ void initialize_map(int rows, int cols, char map[rows][cols]) {
 }
 
 // function to add 10 '#' randomly to the map
-void add_random_hashes(int rows, int cols, char map[rows][cols]) {
+void add_random_hashes(int rows, int cols, char **map) {
     srand(time(NULL));
     for(int i = 0; i < 50; i++) {
         int x, y;
@@ -45,7 +63,7 @@ void add_random_hashes(int rows, int cols, char map[rows][cols]) {
 }
 
 // function to place 'V' at the positions specified in the 'position' array
-void place_drones(char position[MAX_LINES][MAX_LINE_LENGTH], int line_count, int rows, int cols, char map[rows][cols]) {
+void place_drones(char position[MAX_LINES][MAX_LINE_LENGTH], int line_count, int rows, int cols, char **map) {
 	int x, y;
 	char orientation;
 	for(int i = 0; i < line_count-1; i++) {
@@ -67,7 +85,7 @@ void place_drones(char position[MAX_LINES][MAX_LINE_LENGTH], int line_count, int
 }
 
 // function to print the map
-void print_map(int rows, int cols, char map[rows][cols]) {
+void print_map(int rows, int cols, char **map) {
     for(int i = 0; i < cols; i++) {
         printf("=");
     }
@@ -86,6 +104,21 @@ void print_map(int rows, int cols, char map[rows][cols]) {
     printf("\n");
 }
 
+// Thread function for printing the map
+void *print_map_thread(void *arg) {
+    DroneData *data = (DroneData *)arg;
+    while (1) {
+        pthread_mutex_lock(&lock);
+        while (!command_executed) {
+            pthread_cond_wait(&cond, &lock);
+        }
+        print_map(data->rows, data->cols, data->map);  // Assuming you have a function to print the map
+        command_executed = 0;
+        pthread_mutex_unlock(&lock);
+    }
+    return NULL;
+}
+
 // function to print the postions and commands
 void print_positions_and_commands(char position[MAX_LINES][MAX_LINE_LENGTH], char commande[MAX_LINES][MAX_LINE_LENGTH], int line_count) {
     for(int i = 0; i < line_count-1; i++) {
@@ -95,7 +128,7 @@ void print_positions_and_commands(char position[MAX_LINES][MAX_LINE_LENGTH], cha
 }
 
 // When printing the final positions, use the drone_indices array to get the drone index
-void find_drones(int rows, int cols, char map[rows][cols], int drone_indices[rows][cols]) {
+void find_drones(int rows, int cols, char **map, int **drone_indices) {
     for(int i = 0; i < rows; i++) {
         for(int j = 0; j < cols; j++) {
             if(map[i][j] == '^' || map[i][j] == 'v' || map[i][j] == '>' || map[i][j] == '<') {
@@ -146,8 +179,10 @@ void update_position(int *x, int *y, char orientation, char command) {
     }
 }
 
+
+
 // Function to move drone
-void move_drone(int *x, int *y, char *orientation, char command, int rows, int cols, char map[rows][cols], int drone_indices[rows][cols], int drone_index) {
+void move_drone(int *x, int *y, char *orientation, char command, int rows, int cols, char **map, int **drone_indices, int drone_index) {
     int new_x = *x;
     int new_y = *y;
 
@@ -175,7 +210,7 @@ void move_drone(int *x, int *y, char *orientation, char command, int rows, int c
 }
 
 // Function to execute a sequence of commands for a drone
-void execute_commands(int *x, int *y, char *orientation, char *commands, int rows, int cols, char map[rows][cols], char position[MAX_LINES][MAX_LINE_LENGTH], char orientations[MAX_LINES], int index, int drone_indices[rows][cols]) {
+void execute_commands(int *x, int *y, char *orientation, char *commands, int rows, int cols, char **map, char position[MAX_LINES][MAX_LINE_LENGTH], char orientations[MAX_LINES], int index, int **drone_indices) {
     for (int i = 0; commands[i] != '\0'; i++) {
         if (commands[i] == 'L' || commands[i] == 'R' || commands[i] == 'M' || commands[i] == 'B') {
             move_drone(x, y, orientation, commands[i], rows, cols, map, drone_indices, index);
@@ -185,18 +220,49 @@ void execute_commands(int *x, int *y, char *orientation, char *commands, int row
     }
 }
 
-// Function to move all drones according to their command sequences
-void move_all_drones(char position[MAX_LINES][MAX_LINE_LENGTH], char commande[MAX_LINES][MAX_LINE_LENGTH], int line_count, int rows, int cols, char map[rows][cols], char orientations[MAX_LINES], int drone_indices[rows][cols]){
+// Thread function for moving a single drone
+void *move_drone_thread(void *arg) {
+    DroneData *data = (DroneData *)arg;
     int x, y;
     char orientation;
+    sscanf(data->position[data->index], "%d %d %c", &x, &y, &orientation);
+    execute_commands(&x, &y, &orientation, data->commande[data->index], data->rows, data->cols, data->map, data->position, data->orientations, data->index, data->drone_indices);
+
+    pthread_mutex_lock(&lock);
+    command_executed = 1;
+    pthread_cond_signal(&cond);
+    pthread_mutex_unlock(&lock);
+
+    return NULL;
+}
+
+
+// Function to move all drones according to their command sequences
+void move_all_drones(char position[MAX_LINES][MAX_LINE_LENGTH], char commande[MAX_LINES][MAX_LINE_LENGTH], int line_count, int rows, int cols, char **map, char orientations[MAX_LINES], int **drone_indices){
+    pthread_t threads[line_count];
+    DroneData droneData[line_count];
+
+    pthread_t print_thread;
+    pthread_create(&print_thread, NULL, print_map_thread, &droneData[0]);
+
     for(int i = 0; i < line_count-1; i++) {
-        sscanf(position[i], "%d %d %c", &x, &y, &orientation);
-        execute_commands(&x, &y, &orientation, commande[i], rows, cols, map, position, orientations, i, drone_indices);
+        droneData[i].index = i;
+        droneData[i].rows = rows;
+        droneData[i].cols = cols;
+        droneData[i].map = map;
+        droneData[i].position = position;
+        droneData[i].orientations = orientations;
+        droneData[i].commande = commande;
+        droneData[i].drone_indices = drone_indices;
+        pthread_create(&threads[i], NULL, move_drone_thread, &droneData[i]);
+        pthread_join(threads[i], NULL);
     }
+
+    pthread_cancel(print_thread);
 }
 
 int main() {
-    FILE *file = fopen("version1.txt", "r");
+    FILE *file = fopen("version2.txt", "r");
     if (file == NULL) {
         printf("Could not open file\n");
         return 1;
@@ -209,21 +275,55 @@ int main() {
     char position[MAX_LINES][MAX_LINE_LENGTH];
     char commande[MAX_LINES][MAX_LINE_LENGTH];
     int line_count = 0;
-	int drone_indices[rows][cols];
+
+    // Create a dynamically allocated 2D array for drone_indices
+    int **drone_indices = malloc(rows * sizeof(int *));
+    for (int i = 0; i < rows; i++) {
+        drone_indices[i] = malloc(cols * sizeof(int));
+    }
 
     read_file(file, position, commande, &line_count);
     print_positions_and_commands(position, commande, line_count);
 
-	char map[rows][cols];
-	char orientations[MAX_LINES];
-	initialize_map(rows, cols, map);
-	add_random_hashes(rows, cols, map);
-	place_drones(position, line_count, rows, cols, map);
-	print_map(rows, cols, map);
-	move_all_drones(position, commande, line_count, rows, cols, map, orientations, drone_indices);
-	print_map(rows, cols, map);
-	find_drones(rows, cols, map, drone_indices);
+    // Create a dynamically allocated 2D array for map
+    char **map = malloc(rows * sizeof(char *));
+    for (int i = 0; i < rows; i++) {
+        map[i] = malloc(cols * sizeof(char));
+    }
 
+    char orientations[MAX_LINES];
+    initialize_map(rows, cols, map);
+    add_random_hashes(rows, cols, map);
+    place_drones(position, line_count, rows, cols, map);
+    print_map(rows, cols, map);
+
+    DroneData droneData;
+    droneData.index = 0;
+    droneData.rows = rows;
+    droneData.cols = cols;
+    droneData.map = map;
+    droneData.position = position;
+    droneData.orientations = orientations;
+    droneData.commande = commande;
+    droneData.drone_indices = drone_indices;
+
+    pthread_t print_thread;
+    pthread_create(&print_thread, NULL, print_map_thread, &droneData);
+
+    move_all_drones(position, commande, line_count, rows, cols, map, orientations, drone_indices);
+
+    pthread_cancel(print_thread);
+
+    print_map(rows, cols, map);
+    find_drones(rows, cols, map, drone_indices);
+
+    // Don't forget to free the dynamically allocated memory when you're done with it
+    for (int i = 0; i < rows; i++) {
+        free(map[i]);
+        free(drone_indices[i]);
+    }
+    free(map);
+    free(drone_indices);
     fclose(file);
     return 0;
 }
