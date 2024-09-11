@@ -69,7 +69,7 @@ int main() {
         printf("contenu : \n%s\n", file_content);
         fclose(file);
 
-        bd = sendto(s, filename, file_size, 0, (struct sockaddr *)&padin, sizeof(padin));
+        bd = sendto(s, file_content, file_size, 0, (struct sockaddr *)&padin, sizeof(padin));
         if (bd == -1) {
             perror("Erreur send");
             free(file_content);

@@ -18,20 +18,20 @@
 
 
 // function to read the txt file
-void read_file(FILE *file, char position[MAX_LINES][MAX_LINE_LENGTH], char commande[MAX_LINES][MAX_LINE_LENGTH], int *line_count) {
-    char line[MAX_LINE_LENGTH];
-    while (fgets(line, sizeof(line), file)) {
-        if (*line_count > 0 && strlen(line) > 1) {
-            char *last_space = strrchr(line, ' ');
-            if (last_space != NULL) {
-                *last_space = '\0';
-                strcpy(commande[*line_count - 1], last_space + 1);
-            }
-            strcpy(position[*line_count - 1], line);
+void read_file(char *content, char position[MAX_LINES][MAX_LINE_LENGTH], char commande[MAX_LINES][MAX_LINE_LENGTH], int *line_count) {
+    char *line = strtok(content, "\n");
+    while (line != NULL) {
+        // Assuming each line is either a position or a command
+        if (*line_count % 2 == 0) {
+            strncpy(position[*line_count / 2], line, MAX_LINE_LENGTH - 1);
+        } else {
+            strncpy(commande[*line_count / 2], line, MAX_LINE_LENGTH - 1);
         }
         (*line_count)++;
+        line = strtok(NULL, "\n");
     }
 }
+
 
 // function to initialize the map with the drones
 void initialize_map(int rows, int cols, char map[rows][cols]) {
@@ -331,34 +331,25 @@ int main() {
     socklen_t p_lgexp = sizeof(struct sockaddr_in);
 
     while (1) {
-        bd = recvfrom(s, msg, BUFFER_SIZE, 0, (struct sockaddr *)p_exp, &p_lgexp);
-        if (bd == -1) {
-            perror("Erreur receive");
-            exit(EXIT_FAILURE);
-        }
-        msg[bd] = '\0';
-        printf("Client :\n %s\n", msg);
+		bd = recvfrom(s, msg, BUFFER_SIZE, 0, (struct sockaddr *)p_exp, &p_lgexp);
+		if (bd == -1) {
+			perror("Erreur receive");
+			exit(EXIT_FAILURE);
+		}
+		msg[bd] = '\0';
+		printf("Client :\n %s\n", msg);
 
-
-        //printf("Quel est votre message ?  ");
-        //fgets(msg2, 40, stdin);
-		
 		int rows, cols, line_count;
-		
-        FILE *file = fopen(msg, "r");
-        if (file == NULL) {
-            printf("Could not open file\n");
-            return 1;
-        }
+	
 
-        fscanf(file, "%d %d", &cols, &rows); // Use file pointer instead of msg
+        sscanf(msg, "%d %d", &cols, &rows); // Use file pointer instead of msg
 
         char position[MAX_LINES][MAX_LINE_LENGTH];
         char commande[MAX_LINES][MAX_LINE_LENGTH];
         line_count = 0; // Reset line_count to 0 for each file
         int drone_indices[rows][cols];
 
-        read_file(file, position, commande, &line_count);
+		read_file(msg, position, commande, &line_count);
 
         char map[rows][cols];
         char orientations[MAX_LINES];
@@ -385,7 +376,6 @@ int main() {
 		// Don't forget to free the memory after using the result
 		free(result);
 
-		fclose(file);
 
         bd = sendto(s, msg2, strlen(msg2), 0, (struct sockaddr *)p_exp, sizeof(*p_exp));
         if (bd == -1) {
